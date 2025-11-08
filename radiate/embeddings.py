@@ -93,7 +93,7 @@ class LocalEmbeddings(EmbeddingProvider):
         try:
             print(f"Loading local model: {model_name}...")
             self.model = SentenceTransformer(model_name)
-            print(f"✅ Model loaded successfully")
+            print(f"Model loaded successfully")
         except Exception as e:
             raise RuntimeError(f"Failed to load local model '{model_name}': {str(e)}")
     

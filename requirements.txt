@@ -1,6 +1,10 @@
-openai>=1.0.0
+# Core dependencies
 qdrant-client>=1.7.0
 python-dotenv>=1.0.0
-tiktoken>=0.5.0
-PyPDF2>=3.0.0
-python-magic>=0.4.27
+
+# LLM providers (at least one required)
+openai>=1.0.0  # For OpenAI and OpenRouter
+
+# Local embeddings (optional but recommended)
+sentence-transformers>=2.2.0
+torch>=2.0.0  # Required by sentence-transformers

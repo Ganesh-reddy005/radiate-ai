@@ -280,32 +280,41 @@ class Radiate:
         result["embedding_stats"] = self.get_stats()
         return result
     
-    def query(self, question: str, top_k: int = 3) -> str:
+    def query(self, question: str, top_k: int = 3, mode: str = "dense") -> str:
         """
         Query ingested documents.
-        
+
         Args:
             question: Question to ask
             top_k: Number of relevant chunks to retrieve
-            
+            mode: Retrieval mode - "dense" (default), "sparse" (BM25), or "hybrid"
+
         Returns:
             Context from relevant documents
+
+        Examples:
+            # Dense vector search
+            radiate.query("What is machine learning?")
+            
+            # Hybrid search (better accuracy)
+            radiate.query("API rate limit", mode="hybrid")
         """
         from radiate.query import QueryEngine
         engine = QueryEngine(self)
-        return engine.query(question, top_k=top_k)
+        return engine.query(question, top_k=top_k, mode=mode)
     
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 5, mode: str = "dense") -> List[Dict[str, Any]]:
         """
         Search for relevant documents.
         
         Args:
             query: Search query
             top_k: Number of results to return
-            
+            mode: Retrieval mode - "dense", "sparse", or "hybrid"
+        
         Returns:
             List of search results with scores
         """
         from radiate.query import QueryEngine
         engine = QueryEngine(self)
-        return engine.search(query, top_k=top_k)
+        return engine.search(query, top_k=top_k, mode=mode)

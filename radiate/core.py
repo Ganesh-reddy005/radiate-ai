@@ -99,7 +99,7 @@ class Radiate:
             self._validate_setup()
     
     def _ensure_collection_exists(self):
-        """Create or validate Qdrant collection with dimension checking."""
+        """Create or validate Qdrant collection with dimension checking and payload indexes."""
         try:
             collections = self.qdrant_client.get_collections().collections
             collection_names = [c.name for c in collections]
@@ -124,7 +124,10 @@ class Radiate:
                 
                 print(f"Using existing collection '{self.collection_name}' (dim={existing_dim})")
             else:
-                # Create new collection
+                # Import payload schema types
+                from qdrant_client.models import PayloadSchemaType
+                
+                # Create new collection with payload indexes
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
@@ -132,7 +135,22 @@ class Radiate:
                         distance=Distance.COSINE
                     )
                 )
+                
+                # Create indexes for filtering
+                self.qdrant_client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="source",
+                    field_schema=PayloadSchemaType.KEYWORD
+                )
+                
+                self.qdrant_client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="chunk_index",
+                    field_schema=PayloadSchemaType.INTEGER
+                )
+                
                 print(f"Created collection '{self.collection_name}' (dim={self.embedding_dim})")
+                print("Created payload indexes: source (keyword), chunk_index (integer)")
         
         except ValueError:
             raise
@@ -142,6 +160,7 @@ class Radiate:
                 raise ValueError("Invalid Qdrant API key. Check QDRANT_API_KEY in .env") from None
             else:
                 raise ValueError(f"Qdrant error: {str(e)}") from None
+
     
     def delete_collection(self, confirm: bool = False):
         """
@@ -255,31 +274,24 @@ class Radiate:
         """
         return self.embedder.get_stats()
     
-    def ingest(self, path: str, pattern: str = "*.txt") -> Dict[str, Any]:
-        """
-        Ingest documents from a file or directory.
-        
-        Args:
-            path: Path to file or directory
-            pattern: File pattern for directory ingestion
-            
-        Returns:
-            Ingestion results with cost tracking
-        """
+    def ingest(self, path: str, pattern: str = None, chunk_mode: str = 'smart') -> Dict[str, Any]:
         from radiate.ingest import DocumentIngester
         ingester = DocumentIngester(self)
         
         if os.path.isfile(path):
-            result = ingester.ingest_file(path)
+            result = ingester.ingest_file(path, chunk_mode=chunk_mode)
+            # Standardize: add total_chunks for consistency
+            result['total_chunks'] = result.get('chunks_ingested', 0)
+            result['total_files'] = 1
         elif os.path.isdir(path):
-            result = ingester.ingest_directory(path, pattern=pattern)
+            result = ingester.ingest_directory(path, pattern=pattern, chunk_mode=chunk_mode)
         else:
             raise ValueError(f"Path not found: {path}")
         
-        # Add cost stats to result
         result["embedding_stats"] = self.get_stats()
         return result
-    
+
+
     def query(self, question: str, top_k: int = 3, mode: str = "dense") -> str:
         """
         Query ingested documents.
@@ -318,3 +330,214 @@ class Radiate:
         from radiate.query import QueryEngine
         engine = QueryEngine(self)
         return engine.search(query, top_k=top_k, mode=mode)
+
+
+    #async functionality
+    async def ingest_async(self, path: str, pattern: str = None, chunk_mode: str = 'smart', max_concurrent_files: int = 3) -> Dict[str, Any]:
+        from radiate.ingest_async import AsyncDocumentIngester
+        ingester = AsyncDocumentIngester(self)
+        
+        if os.path.isfile(path):
+            result = await ingester.ingest_file_async(path, chunk_mode=chunk_mode)
+            # Standardize
+            result['total_chunks'] = result.get('chunks_ingested', 0)
+            result['total_files'] = 1
+        elif os.path.isdir(path):
+            result = await ingester.ingest_directory_async(path, pattern=pattern, chunk_mode=chunk_mode, max_concurrent_files=max_concurrent_files)
+        else:
+            raise ValueError(f"Path not found: {path}")
+        
+        result["embedding_stats"] = self.get_stats()
+        return result
+
+
+
+
+#getting chunks data
+
+    def get_all_chunks(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        Retrieve all chunks from collection with pagination.
+        
+        Args:
+            limit: Maximum number of chunks to retrieve (default: 100)
+            offset: Number of chunks to skip (default: 0)
+            
+        Returns:
+            List of chunks with metadata
+            
+        Example:
+            # Get first 10 chunks
+            chunks = radiate.get_all_chunks(limit=10)
+            
+            # Get next 10 chunks
+            chunks = radiate.get_all_chunks(limit=10, offset=10)
+        """
+        try:
+            # Scroll through collection
+            points, next_offset = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                limit=limit,
+                offset=offset,
+                with_vectors=False,  # Don't return vectors (saves bandwidth)
+                with_payload=True
+            )
+            
+            chunks = []
+            for point in points:
+                chunks.append({
+                    "id": point.id,
+                    "text": point.payload.get("text", ""),
+                    "source": point.payload.get("source", ""),
+                    "chunk_index": point.payload.get("chunk_index", 0),
+                    "total_chunks": point.payload.get("total_chunks", 0),
+                    "metadata": {k: v for k, v in point.payload.items() 
+                            if k not in ["text", "source", "chunk_index", "total_chunks"]}
+                })
+            
+            return chunks
+        
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve chunks: {str(e)}")
+
+
+    def get_chunks_by_source(self, source: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get all chunks from a specific source file.
+        
+        Args:
+            source: Source file path
+            limit: Maximum chunks to return
+            
+        Returns:
+            List of chunks from that source
+            
+        Example:
+            chunks = radiate.get_chunks_by_source("api_docs.txt")
+            print(f"Found {len(chunks)} chunks from api_docs.txt")
+        """
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            
+            # Filter by source
+            results = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="source",
+                            match=MatchValue(value=source)
+                        )
+                    ]
+                ),
+                limit=limit,
+                with_vectors=False,
+                with_payload=True
+            )
+            
+            points = results[0]
+            
+            chunks = []
+            for point in points:
+                chunks.append({
+                    "id": point.id,
+                    "text": point.payload.get("text", ""),
+                    "source": point.payload.get("source", ""),
+                    "chunk_index": point.payload.get("chunk_index", 0),
+                    "total_chunks": point.payload.get("total_chunks", 0),
+                    "metadata": point.payload
+                })
+            
+            # Sort by chunk index
+            chunks.sort(key=lambda x: x["chunk_index"])
+            
+            return chunks
+        
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve chunks: {str(e)}")
+
+
+    def get_chunk_by_id(self, chunk_id: int) -> Dict[str, Any]:
+        """
+        Get a specific chunk by ID.
+        
+        Args:
+            chunk_id: Chunk ID
+            
+        Returns:
+            Chunk data
+            
+        Example:
+            chunk = radiate.get_chunk_by_id(123456789)
+            print(chunk['text'])
+        """
+        try:
+            points = self.qdrant_client.retrieve(
+                collection_name=self.collection_name,
+                ids=[chunk_id],
+                with_vectors=False,
+                with_payload=True
+            )
+            
+            if not points:
+                raise ValueError(f"Chunk ID {chunk_id} not found")
+            
+            point = points[0]
+            return {
+                "id": point.id,
+                "text": point.payload.get("text", ""),
+                "source": point.payload.get("source", ""),
+                "chunk_index": point.payload.get("chunk_index", 0),
+                "total_chunks": point.payload.get("total_chunks", 0),
+                "metadata": point.payload
+            }
+        
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve chunk: {str(e)}")
+
+
+    def list_sources(self) -> List[str]:
+        """
+        List all unique source files in the collection.
+        
+        Returns:
+            List of source file paths
+            
+        Example:
+            sources = radiate.list_sources()
+            print(f"Ingested files: {sources}")
+        """
+        try:
+            # Get all chunks
+            all_chunks = self.get_all_chunks(limit=10000)
+            
+            # Extract unique sources
+            sources = list(set([chunk["source"] for chunk in all_chunks]))
+            sources.sort()
+            
+            return sources
+        
+        except Exception as e:
+            raise ValueError(f"Failed to list sources: {str(e)}")
+
+
+    def print_chunk_summary(self, chunk: Dict[str, Any]):
+        """
+        Pretty print a chunk for inspection.
+        
+        Args:
+            chunk: Chunk dictionary
+            
+        Example:
+            chunks = radiate.get_all_chunks(limit=5)
+            for chunk in chunks:
+                radiate.print_chunk_summary(chunk)
+        """
+        print(f"\n{'='*60}")
+        print(f"Chunk ID: {chunk['id']}")
+        print(f"Source: {chunk['source']}")
+        print(f"Chunk: {chunk['chunk_index'] + 1}/{chunk['total_chunks']}")
+        print(f"{'='*60}")
+        print(f"\nText Preview:")
+        print(f"{chunk['text'][:200]}...")
+        print(f"\nFull Length: {len(chunk['text'])} characters")

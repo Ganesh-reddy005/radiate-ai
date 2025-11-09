@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import tiktoken
 from qdrant_client.models import PointStruct
+import re
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> List[str]:
@@ -79,6 +80,81 @@ def read_file(file_path: str) -> str:
         )
 
 
+def smart_chunk_text(text, filetype, chunk_size=512, overlap=50):
+        """
+        Intelligently chunk text based on filetype.
+        - Text/Markdown: Paragraphs/headings/code
+        - PDF: Page-aware if the content is provided as one page per string
+        Falls back to token chunking for very long chunks.
+        """
+        def tokenize(t):
+            encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+            return encoding.encode(t)
+        def detokenize(toks):
+            encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+            return encoding.decode(toks)
+        
+        # Split by page if PDF (usually \f is page break but often loader already handles this)
+        if filetype.lower() == "pdf":
+            blocks = text.split("\f")
+        else:
+            blocks = [text]
+        
+        final_chunks = []
+        for block in blocks:
+            # For Markdown files, keep code blocks together, split on double newline otherwise
+            if filetype.lower() == "md":
+                # Code block aware paragraph splitting
+                paras = []
+                in_code = False
+                curr = []
+                for line in block.splitlines(keepends=True):
+                    if re.match(r"^\s*```", line):
+                        in_code = not in_code
+                        curr.append(line)
+                        if not in_code:
+                            paras.append("".join(curr))
+                            curr = []
+                        continue
+                    if not in_code and line.strip() == "":
+                        if curr:
+                            paras.append("".join(curr))
+                            curr = []
+                    else:
+                        curr.append(line)
+                if curr: paras.append("".join(curr))
+            else:
+                # TXT, PDF, or fallback: split on double newline (paragraph boundary)
+                paras = re.split(r"\n\s*\n", block)
+            
+            # Group chunks up to chunk_size
+            current = []
+            current_toks = 0
+            for para in paras:
+                n_toks = len(tokenize(para))
+                if (current_toks + n_toks < chunk_size) and not para.strip().startswith("#"):
+                    current.append(para)
+                    current_toks += n_toks
+                else:
+                    if current:
+                        final_chunks.append("\n\n".join(current))
+                    current = [para]
+                    current_toks = n_toks
+            if current:
+                final_chunks.append("\n\n".join(current))
+            
+            # Now ensure chunks aren't too long, break into tokens if needed
+        real_final = []
+        for chunk in final_chunks:
+            toks = tokenize(chunk)
+            start = 0
+            while start < len(toks):
+                real_final.append(detokenize(toks[start:start+chunk_size]))
+                if start + chunk_size >= len(toks):
+                    break
+                start += chunk_size - overlap
+        return [c for c in real_final if c.strip()]
+
 class DocumentIngester:
     """Handles document ingestion into Qdrant with batch optimization."""
     
@@ -91,7 +167,7 @@ class DocumentIngester:
         """
         self.radiate = radiate_instance
     
-    def ingest_file(self, file_path: str, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+    def ingest_file(self, file_path: str, metadata: Dict[str, Any] = None, chunk_mode:str ='smart') -> Dict[str, Any]:
         """
         Ingest a single file into Qdrant with batch embedding.
         
@@ -106,7 +182,12 @@ class DocumentIngester:
         
         try:
             text = read_file(file_path)
-            chunks = chunk_text(text)
+            suffix = Path(file_path).suffix.lower().strip(".")
+            
+            if chunk_mode == "smart":
+                chunks = smart_chunk_text(text, suffix)
+            elif chunk_mode in [None, "Null"]:
+                chunks = chunk_text(text)
             
             if not chunks:
                 return {
@@ -162,14 +243,16 @@ class DocumentIngester:
     def ingest_directory(
         self, 
         directory_path: str, 
-        pattern: str = "*.txt"
+        pattern: str = None,
+        chunk_mode: str = 'smart'
     ) -> Dict[str, Any]:
         """
         Ingest all files matching pattern in a directory.
         
         Args:
             directory_path: Path to directory
-            pattern: File pattern (e.g., "*.txt", "*.md", "*.pdf")
+            pattern: File pattern (None = auto-detect .txt, .md, .pdf)
+            chunk_mode: 'smart' or 'token' chunking mode
             
         Returns:
             Dictionary with overall ingestion results
@@ -179,15 +262,27 @@ class DocumentIngester:
         if not path.is_dir():
             raise ValueError(f"Directory not found: {directory_path}")
         
-        files = list(path.glob(pattern))
+        # If no pattern specified, auto-detect all supported types
+        if pattern is None or pattern == "*":
+            patterns = ["*.txt", "*.md", "*.pdf"]
+        else:
+            patterns = [pattern] if isinstance(pattern, str) else pattern
+        
+        # Collect files from all patterns
+        files = []
+        for pat in patterns:
+            files.extend(path.glob(pat))
+        
+        # Remove duplicates
+        files = list(set(files))
         
         if not files:
             raise ValueError(
-                f"No files matching '{pattern}' found in {directory_path}"
+                f"No files matching {patterns} found in {directory_path}"
             )
         
         print(f"\nIngesting {len(files)} files from {directory_path}")
-        print(f"Pattern: {pattern}\n")
+        print(f"File types: {', '.join(patterns)}\n")
         
         results = {
             "total_files": len(files),
@@ -198,7 +293,7 @@ class DocumentIngester:
         }
         
         for file_path in files:
-            result = self.ingest_file(str(file_path))
+            result = self.ingest_file(str(file_path), chunk_mode=chunk_mode)
             
             if result["status"] == "success":
                 results["successful"] += 1
@@ -213,3 +308,6 @@ class DocumentIngester:
         print(f"   Total chunks: {results['total_chunks']}")
         
         return results
+
+
+

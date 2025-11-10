@@ -35,6 +35,7 @@ def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> List[str]
     return chunks
 
 
+#----------------read_file-----------------------------
 def read_file(file_path: str) -> str:
     """
     Read text content from a file.
@@ -79,7 +80,7 @@ def read_file(file_path: str) -> str:
             f"Supported: .txt, .md, .pdf"
         )
 
-
+#----------------------------smart_chunk_text---------------------
 def smart_chunk_text(text, filetype, chunk_size=512, overlap=50):
         """
         Intelligently chunk text based on filetype.
@@ -167,13 +168,24 @@ class DocumentIngester:
         """
         self.radiate = radiate_instance
     
-    def ingest_file(self, file_path: str, metadata: Dict[str, Any] = None, chunk_mode:str ='smart') -> Dict[str, Any]:
+    #-----------------------------------------------------------------------------------------------------------------
+    def ingest_file(
+        self, 
+        file_path: str, 
+        metadata: Dict[str, Any] = None, 
+        chunk_mode: str = 'smart',
+        chunk_size: int = 512,
+        overlap: int = 50
+    ) -> Dict[str, Any]:
         """
         Ingest a single file into Qdrant with batch embedding.
         
         Args:
             file_path: Path to file to ingest
             metadata: Additional metadata to store with chunks
+            chunk_mode: 'smart' or 'token'
+            chunk_size: Max tokens per chunk
+            overlap: Token overlap between chunks
             
         Returns:
             Dictionary with ingestion results
@@ -182,12 +194,13 @@ class DocumentIngester:
         
         try:
             text = read_file(file_path)
-            suffix = Path(file_path).suffix.lower().strip(".")
+            suffix = Path(file_path).suffix.lstrip(".").lower()
             
-            if chunk_mode == "smart":
-                chunks = smart_chunk_text(text, suffix)
-            elif chunk_mode in [None, "Null"]:
-                chunks = chunk_text(text)
+            # Use specified chunking mode
+            if chunk_mode == 'smart':
+                chunks = smart_chunk_text(text, suffix, chunk_size=chunk_size, overlap=overlap)
+            else:
+                chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
             
             if not chunks:
                 return {
@@ -197,7 +210,7 @@ class DocumentIngester:
                     "reason": "No content to ingest"
                 }
             
-            # Batch embed all chunks (much faster!)
+            # Batch embed all chunks
             print(f"Processing {file_path} ({len(chunks)} chunks)...")
             embeddings = self.radiate.get_embeddings_batch(chunks)
             
@@ -211,7 +224,7 @@ class DocumentIngester:
                 }
                 
                 point = PointStruct(
-                    id=uuid.uuid4().int & (2**63 - 1),  # Ensure positive int64
+                    id=uuid.uuid4().int & (2**63 - 1),
                     vector=embedding,
                     payload={"text": chunk, **point_metadata}
                 )
@@ -239,12 +252,19 @@ class DocumentIngester:
                 "status": "failed",
                 "error": str(e)
             }
-    
+
+    #-----------------------------------------------------------------------------------------------------------------
     def ingest_directory(
         self, 
         directory_path: str, 
         pattern: str = None,
-        chunk_mode: str = 'smart'
+        chunk_mode: str = 'smart',
+        chunk_size: int = 512,
+        overlap: int = 50,
+        metadata: Dict[str, Any] = None,
+        show_progress: bool = True,
+        skip_errors: bool = False,
+        recursive: bool = False
     ) -> Dict[str, Any]:
         """
         Ingest all files matching pattern in a directory.
@@ -252,7 +272,13 @@ class DocumentIngester:
         Args:
             directory_path: Path to directory
             pattern: File pattern (None = auto-detect .txt, .md, .pdf)
-            chunk_mode: 'smart' or 'token' chunking mode
+            chunk_mode: 'smart' or 'token'
+            chunk_size: Max tokens per chunk
+            overlap: Token overlap between chunks
+            metadata: Custom metadata for all chunks
+            show_progress: Show progress bar
+            skip_errors: Continue on file errors
+            recursive: Scan subdirectories
             
         Returns:
             Dictionary with overall ingestion results
@@ -262,16 +288,19 @@ class DocumentIngester:
         if not path.is_dir():
             raise ValueError(f"Directory not found: {directory_path}")
         
-        # If no pattern specified, auto-detect all supported types
+        # Pattern handling
         if pattern is None or pattern == "*":
             patterns = ["*.txt", "*.md", "*.pdf"]
         else:
             patterns = [pattern] if isinstance(pattern, str) else pattern
         
-        # Collect files from all patterns
+        # Collect files
         files = []
         for pat in patterns:
-            files.extend(path.glob(pat))
+            if recursive:
+                files.extend(path.rglob(pat))  # Recursive
+            else:
+                files.extend(path.glob(pat))   # Non-recursive
         
         # Remove duplicates
         files = list(set(files))
@@ -282,7 +311,10 @@ class DocumentIngester:
             )
         
         print(f"\nIngesting {len(files)} files from {directory_path}")
-        print(f"File types: {', '.join(patterns)}\n")
+        print(f"File types: {', '.join(patterns)}")
+        if recursive:
+            print("Mode: Recursive")
+        print()
         
         results = {
             "total_files": len(files),
@@ -292,22 +324,54 @@ class DocumentIngester:
             "details": []
         }
         
-        for file_path in files:
-            result = self.ingest_file(str(file_path), chunk_mode=chunk_mode)
-            
-            if result["status"] == "success":
-                results["successful"] += 1
-                results["total_chunks"] += result["chunks_ingested"]
-            else:
-                results["failed"] += 1
-            
-            results["details"].append(result)
+        # Optional progress bar
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                files_iter = tqdm(files, desc="Ingesting files")
+            except ImportError:
+                print("Install tqdm for progress bar: pip install tqdm")
+                files_iter = files
+        else:
+            files_iter = files
+        
+        # Process files
+        for file_path in files_iter:
+            try:
+                result = self.ingest_file(
+                    str(file_path),
+                    metadata=metadata,
+                    chunk_mode=chunk_mode,
+                    chunk_size=chunk_size,
+                    overlap=overlap
+                )
+                
+                if result["status"] == "success":
+                    results["successful"] += 1
+                    results["total_chunks"] += result["chunks_ingested"]
+                else:
+                    results["failed"] += 1
+                
+                results["details"].append(result)
+                
+            except Exception as e:
+                if skip_errors:
+                    print(f"Skipping {file_path}: {str(e)}")
+                    results["failed"] += 1
+                    results["details"].append({
+                        "file": str(file_path),
+                        "status": "failed",
+                        "error": str(e)
+                    })
+                else:
+                    raise
         
         print(f"\nIngestion complete!")
         print(f"   Files processed: {results['successful']}/{results['total_files']}")
         print(f"   Total chunks: {results['total_chunks']}")
         
         return results
+
 
 
 

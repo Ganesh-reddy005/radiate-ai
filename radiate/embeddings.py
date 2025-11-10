@@ -60,11 +60,12 @@ class EmbeddingProvider(ABC):
             return embedding
         except Exception as e:
             raise RuntimeError(f"Embedding failed: {str(e)}")
-    
+    #-----------------------------------------------------------------------------------------------------------------
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Embed multiple texts"""
         return [self.embed(text) for text in texts if text.strip()]
-    
+   
+    #-----------------------------------------------------------------------------------------------------------------
     async def embed_async(self, text: str) -> List[float]:
         """
         Async version of embed.
@@ -73,6 +74,7 @@ class EmbeddingProvider(ABC):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.embed, text)
     
+    #-----------------------------------------------------------------------------------------------------------------
     async def embed_batch_async(
         self, 
         texts: List[str],
@@ -124,6 +126,7 @@ class EmbeddingProvider(ABC):
         # Flatten results
         return [emb for batch_results in results for emb in batch_results]
     
+    #-----------------------------------------------------------------------------------------------------------------
     def get_stats(self) -> Dict:
         """Return statistics"""
         total = max(self.total_embeddings + self.cached_embeddings, 1)
@@ -141,7 +144,7 @@ class EmbeddingProvider(ABC):
         pass
 
 
-
+#offline model
 class LocalEmbeddings(EmbeddingProvider):
     """Local embedding model using sentence-transformers (FREE)"""
     

@@ -97,7 +97,9 @@ class Radiate:
         
         if validate_connections:
             self._validate_setup()
-    
+
+    #-------------check collection----------------------
+
     def _ensure_collection_exists(self):
         """Create or validate Qdrant collection with dimension checking and payload indexes."""
         try:
@@ -161,7 +163,7 @@ class Radiate:
             else:
                 raise ValueError(f"Qdrant error: {str(e)}") from None
 
-    
+    #-------------delete collection----------------------
     def delete_collection(self, confirm: bool = False):
         """
         Delete the current collection and recreate it.
@@ -196,6 +198,7 @@ class Radiate:
         except Exception as e:
             raise ValueError(f"Failed to delete collection: {str(e)}")
     
+    #-----------------List collections -------------------------------------
     def list_collections(self) -> List[str]:
         """
         List all available Qdrant collections.
@@ -228,6 +231,7 @@ class Radiate:
         except Exception as e:
             raise ValueError(f"Failed to get collection info: {str(e)}")
     
+    #----------------------------validte setup------------------------------------
     def _validate_setup(self):
         """Validate that everything is working."""
         try:
@@ -241,6 +245,10 @@ class Radiate:
         except Exception as e:
             raise ValueError(f"Validation failed: {str(e)}")
     
+    #-------------------------------------------------------------------------------------------------------------
+    #--------------------------------embeddings-----------------------------------------
+
+    #----------------------1.Get embeddings------------------------------------
     def get_embedding(self, text: str) -> List[float]:
         """
         Generate embedding for text.
@@ -253,6 +261,7 @@ class Radiate:
         """
         return self.embedder.embed(text)
     
+    #---------------------------------get_embeddings_batch------------------------
     def get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """
         Generate embeddings for multiple texts (faster than one-by-one).
@@ -265,6 +274,7 @@ class Radiate:
         """
         return self.embedder.embed_batch(texts)
     
+    #--------------------get_status---------------------------
     def get_stats(self) -> Dict[str, Any]:
         """
         Get statistics about embeddings and costs.
@@ -274,24 +284,92 @@ class Radiate:
         """
         return self.embedder.get_stats()
     
-    def ingest(self, path: str, pattern: str = None, chunk_mode: str = 'smart') -> Dict[str, Any]:
+    #----------------------INGEST----------------------------------
+    def ingest(
+        self, 
+        path: str, 
+        pattern: str = None, 
+        chunk_mode: str = 'smart',
+        chunk_size: int = 512,
+        overlap: int = 50,
+        metadata: Dict[str, Any] = None,
+        batch_size: int = 32,
+        show_progress: bool = True,
+        skip_errors: bool = False,
+        recursive: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Ingest documents from a file or directory.
+        
+        Args:
+            path: File or directory path
+            pattern: File pattern (None = auto-detect .txt, .md, .pdf)
+            chunk_mode: 'smart' (default) or 'token'
+            chunk_size: Max tokens per chunk (default: 512)
+            overlap: Token overlap between chunks (default: 50)
+            metadata: Custom metadata to attach to all chunks
+            batch_size: Embedding batch size (default: 32)
+            show_progress: Display progress bar (default: True)
+            skip_errors: Continue on file errors (default: False)
+            recursive: Scan subdirectories (default: False)
+            
+        Returns:
+            Ingestion results with cost stats
+            
+        Example:
+            result = radiate.ingest(
+                "docs/",
+                chunk_size=1024,
+                overlap=100,
+                metadata={"version": "1.0"},
+                recursive=True
+            )
+        """
+        # Validation
+        if chunk_size < 50:
+            raise ValueError("chunk_size must be >= 50")
+        if overlap >= chunk_size:
+            raise ValueError("overlap must be < chunk_size")
+        if overlap < 0:
+            raise ValueError("overlap must be >= 0")
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        
         from radiate.ingest import DocumentIngester
         ingester = DocumentIngester(self)
         
         if os.path.isfile(path):
-            result = ingester.ingest_file(path, chunk_mode=chunk_mode)
-            # Standardize: add total_chunks for consistency
+            result = ingester.ingest_file(
+                path,
+                metadata=metadata,
+                chunk_mode=chunk_mode,
+                chunk_size=chunk_size,
+                overlap=overlap
+            )
+            # Standardize response
             result['total_chunks'] = result.get('chunks_ingested', 0)
             result['total_files'] = 1
         elif os.path.isdir(path):
-            result = ingester.ingest_directory(path, pattern=pattern, chunk_mode=chunk_mode)
+            result = ingester.ingest_directory(
+                path, 
+                pattern=pattern,
+                chunk_mode=chunk_mode,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                metadata=metadata,
+                show_progress=show_progress,
+                skip_errors=skip_errors,
+                recursive=recursive
+            )
         else:
             raise ValueError(f"Path not found: {path}")
         
+        # Add cost stats
         result["embedding_stats"] = self.get_stats()
         return result
 
 
+    #-------------------------Query-------------------------------
     def query(self, question: str, top_k: int = 3, mode: str = "dense") -> str:
         """
         Query ingested documents.
@@ -303,6 +381,7 @@ class Radiate:
 
         Returns:
             Context from relevant documents
+            -for LLM's
 
         Examples:
             # Dense vector search
@@ -315,6 +394,7 @@ class Radiate:
         engine = QueryEngine(self)
         return engine.query(question, top_k=top_k, mode=mode)
     
+    #---------------------SEARCH------------------------------------
     def search(self, query: str, top_k: int = 5, mode: str = "dense") -> List[Dict[str, Any]]:
         """
         Search for relevant documents.
@@ -326,24 +406,92 @@ class Radiate:
         
         Returns:
             List of search results with scores
+            For testing purpose
         """
         from radiate.query import QueryEngine
         engine = QueryEngine(self)
         return engine.search(query, top_k=top_k, mode=mode)
 
 
-    #async functionality
-    async def ingest_async(self, path: str, pattern: str = None, chunk_mode: str = 'smart', max_concurrent_files: int = 3) -> Dict[str, Any]:
+#-------------------------------------------------------------------------------------------
+    #-------------------------async functionality--------------------------
+    async def ingest_async(
+        self, 
+        path: str, 
+        pattern: str = None,
+        chunk_mode: str = 'smart',
+        chunk_size: int = 512,
+        overlap: int = 50,
+        metadata: Dict[str, Any] = None,
+        max_concurrent_files: int = 3,
+        batch_size: int = 32,
+        show_progress: bool = True,
+        skip_errors: bool = False,
+        recursive: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Async ingest documents (10x faster for large datasets).
+        
+        Args:
+            path: File or directory path
+            pattern: File pattern (None = auto-detect)
+            chunk_mode: 'smart' or 'token'
+            chunk_size: Max tokens per chunk (default: 512)
+            overlap: Token overlap (default: 50)
+            metadata: Custom metadata
+            max_concurrent_files: Max concurrent file processing
+            batch_size: Embedding batch size (default: 32)
+            show_progress: Display progress (default: True)
+            skip_errors: Continue on errors (default: False)
+            recursive: Scan subdirectories (default: False)
+            
+        Returns:
+            Ingestion results with stats
+            
+        Example:
+            result = await radiate.ingest_async(
+                "docs/",
+                chunk_size=1024,
+                recursive=True
+            )
+        """
+        # Validation
+        if chunk_size < 50:
+            raise ValueError("chunk_size must be >= 50")
+        if overlap >= chunk_size:
+            raise ValueError("overlap must be < chunk_size")
+        if overlap < 0:
+            raise ValueError("overlap must be >= 0")
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        
         from radiate.ingest_async import AsyncDocumentIngester
         ingester = AsyncDocumentIngester(self)
         
         if os.path.isfile(path):
-            result = await ingester.ingest_file_async(path, chunk_mode=chunk_mode)
-            # Standardize
+            result = await ingester.ingest_file_async(
+                path,
+                metadata=metadata,
+                chunk_mode=chunk_mode,
+                chunk_size=chunk_size,
+                overlap=overlap
+            )
+            # Standardize response
             result['total_chunks'] = result.get('chunks_ingested', 0)
             result['total_files'] = 1
         elif os.path.isdir(path):
-            result = await ingester.ingest_directory_async(path, pattern=pattern, chunk_mode=chunk_mode, max_concurrent_files=max_concurrent_files)
+            result = await ingester.ingest_directory_async(
+                path, 
+                pattern=pattern,
+                chunk_mode=chunk_mode,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                metadata=metadata,
+                max_concurrent_files=max_concurrent_files,
+                show_progress=show_progress,
+                skip_errors=skip_errors,
+                recursive=recursive
+            )
         else:
             raise ValueError(f"Path not found: {path}")
         
@@ -351,9 +499,7 @@ class Radiate:
         return result
 
 
-
-
-#getting chunks data
+#--------------------getting chunks data---------------
 
     def get_all_chunks(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """
@@ -399,9 +545,11 @@ class Radiate:
         
         except Exception as e:
             raise ValueError(f"Failed to retrieve chunks: {str(e)}")
+        
 
 
-    def get_chunks_by_source(self, source: str, limit: int = 100) -> List[Dict[str, Any]]:
+    #--------------------------chunks_by_source----------------------
+    def get_chunks_by_source(self, source: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Get all chunks from a specific source file.
         
@@ -456,7 +604,7 @@ class Radiate:
         except Exception as e:
             raise ValueError(f"Failed to retrieve chunks: {str(e)}")
 
-
+#----------------------get_chunk_by_id-----------------------------------
     def get_chunk_by_id(self, chunk_id: int) -> Dict[str, Any]:
         """
         Get a specific chunk by ID.
@@ -496,6 +644,7 @@ class Radiate:
             raise ValueError(f"Failed to retrieve chunk: {str(e)}")
 
 
+#--------------------------list_sources-----------------------
     def list_sources(self) -> List[str]:
         """
         List all unique source files in the collection.
@@ -521,6 +670,7 @@ class Radiate:
             raise ValueError(f"Failed to list sources: {str(e)}")
 
 
+#-------print_chunk_summary----------------------
     def print_chunk_summary(self, chunk: Dict[str, Any]):
         """
         Pretty print a chunk for inspection.

@@ -10,3 +10,4 @@ sentence-transformers>=2.2.0
 torch>=2.0.0  # Required by sentence-transformers
 # Async support (already in Python 3.7+, no new dependencies needed)
 # Just ensure Python version
+tqdm>=4.66.0

@@ -1,6 +1,6 @@
 # Changelog - Latest
 
-## [Unreleased] - 2025-11-09
+## [Unreleased] - 2025-11-10
 
 ### Added
 - **Intelligent Chunking:** New `smart_chunk_text()` function that respects logical boundaries
@@ -14,16 +14,19 @@
 - **Auto File Type Detection:** When `pattern=None`, automatically ingests .txt, .md, and .pdf files
 - **Payload Indexes:** Created indexes on `source` and `chunk_index` fields for faster filtering
 - **Standardized Return Values:** Both single file and directory ingestion now return consistent structure with `total_chunks`
+- **add flexible ingestion parameters and robustness:** Add chunk_size, overlap, metadata, batch_size, show_progress, skip_errors, recursive as parameters to ingestion (sync and async)
 
 ### Changed
 - **Default Pattern Behavior:** `pattern=None` now auto-detects all supported file types instead of requiring explicit pattern
 - **Ingestion Response Structure:** Single file ingestion now includes `total_chunks` and `total_files` for consistency
 - **Smart Chunking Default:** All ingestion now uses smart chunking by default (can opt into token mode)
+- **ingest:** Added multiple params to to .ingest method
 
 ### Fixed
 - Pattern handling in directory ingestion now supports `None` value
 - Consistent response structure across sync and async ingestion
 - Better handling of Markdown code blocks during chunking
+- Giving Flexibility and improved error handiling 
 
 ### Technical Details
 - Updated `DocumentIngester.ingest_file()` to support chunk modes
@@ -31,7 +34,7 @@
 - Updated `AsyncDocumentIngester.ingest_file_async()` to support chunk modes
 - Updated `AsyncDocumentIngester.ingest_directory_async()` with pattern auto-detection
 - Modified `Radiate.ingest()` and `Radiate.ingest_async()` to normalize return values
-
+- Modified `Radiate.ingest()` and `Radiate.ingest_async` to handle multiple parameters for flexibility
 ---
 
 ## [0.1.0] - 2025-11-08

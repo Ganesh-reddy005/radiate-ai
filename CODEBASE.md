@@ -16,10 +16,11 @@
    - `factory.py`: create_embeddings() factory
 
 3. **radiate/ingestion/** - Document processing
-   - `chunking.py`: chunk_text() function
-   - `readers.py`: read_file() function
-   - `ingester.py`: DocumentIngester class (sync)
-   - `ingester_async.py`: AsyncDocumentIngester class
+   - `chunking.py`: `chunk_text()` function
+   - `smart_chunk_text()`: intelligent chunking (boundary-aware)
+   - `readers.py`: `read_file()` function
+   - `ingester.py`: `DocumentIngester` class (sync, all ingest params)
+   - `ingester_async.py`: `AsyncDocumentIngester` class (async, all ingest params)
 
 4. **radiate/retrieval/** - Search functionality
    - `dense.py`: Vector search
@@ -29,92 +30,68 @@
 
 ### Data Flow
 
-Ingestion:
+Ingestion:  
 File → Reader → Chunker → Embedder → Qdrant
 
-Search:
+Search:  
 Query → Embedder → Retriever → RRF → Results
 
-## Making Changes
+## Ingestion: Parameters and Modes
 
-### Adding New Features
+### Flexible Ingestion Parameters  
+_All ingestion modes support the following parameters:_
 
-1. Identify component (embedding/ingestion/retrieval)
-2. Create new file in appropriate directory
-3. Follow existing patterns
-4. Update __init__.py exports
-5. Add tests
-6. Update documentation
+- `chunk_mode`: `"smart"` | `"token"` (default: `"smart"`)  
+- `chunk_size`: Max tokens per chunk (default: 512)  
+- `overlap`: Tokens overlapping between chunks (default: 50)  
+- `metadata`: Custom metadata to attach to all chunks  
+- `batch_size`: Embedding batch size for performance tuning (default: 32)  
+- `show_progress`: Show progress bar (default: True; requires `tqdm`)  
+- `skip_errors`: Continue on file errors (default: False)  
+- `recursive`: Scan subdirectories (default: False)  
 
-### Fixing Bugs
+### Example Usage
+```python result = radiate.ingest(
+"docs/",
+chunk_mode="smart",
+chunk_size=256,
+overlap=25,
+metadata={"project": "radiate", "version": "v0.2"},
+batch_size=64,
+show_progress=True,
+skip_errors=True,
+recursive=True
+)
 
-1. Locate relevant module using CODEBASE.md
-2. Add test that reproduces bug
-3. Fix bug
-4. Verify test passes
-5. Update CHANGELOG.md
+### Intelligent Chunking
 
-### Current Issues
+**Function:** `smart_chunk_text(text, filetype, chunk_size, overlap)`
 
-- None
+- Text: splits by paragraph boundaries
+- Markdown: preserves code blocks, headers, lists
+- PDF: respects page boundaries first, then paragraphs
+- If a block exceeds `chunk_size`, fallback to token splitting
 
-### Future Improvements
+### Token Chunking
+
+**Function:** `chunk_text(text, chunk_size, overlap)`
+- Splits strictly by tokens, may break mid-paragraph or mid-code block.
+
+---
+
+## Indexing
+
+- Each chunk is indexed with `source` (file path) keyword, and `chunk_index` integer for easy filtering.
+
+---
+
+## Error Handling
+
+- If `skip_errors` is enabled, ingestion continues after errors.
+- Progress bars use `tqdm` if installed and `show_progress=True`.
+
+## Future Improvements
 
 - Reranking (retrieval/reranker.py)
 - Async search (retrieval/query_async.py)
-
-
-## Intelligent Chunking
-
-### Smart Chunking (`smart_chunk_text`)
-**Location:** `radiate/ingest.py`
-
-Intelligently chunks text based on file type while respecting logical boundaries:
-
-**Features:**
-- **Text files:** Splits on paragraph boundaries (double newline)
-- **Markdown files:** Preserves code blocks, headers, and list structures
-- **PDF files:** Respects page boundaries when available
-- **Fallback:** Uses token-based chunking for oversized paragraphs
-
-**Parameters:**
-- `text`: Text to chunk
-- `filetype`: File extension ('txt', 'md', 'pdf')
-- `chunk_size`: Maximum tokens per chunk (default: 512)
-- `overlap`: Token overlap between chunks (default: 50)
-
-**Usage:**
-chunks = smart_chunk_text(text, 'md', chunk_size=512, overlap=50)
-
-
-**Advantages over token chunking:**
-- Preserves semantic meaning
-- Keeps code blocks intact
-- Headers stay with their content
-- Complete paragraphs maintained
-
----
-
-## Ingestion Modes
-
-### Chunk Modes
-Radiate supports two chunking strategies:
-
-1. **Smart Mode (default):** Respects logical boundaries
-2. **Token Mode:** Fixed token-based splitting
-
-**Smart chunking (default)**
-result = radiate.ingest("docs/", chunk_mode="smart")
-
-**Token-based chunking**
-result = radiate.ingest("docs/", chunk_mode="token")
-
----
-### Auto-Detection
-When no pattern is specified, Radiate auto-detects all supported file types:
-**Auto-detects .txt, .md, .pdf**
-result = radiate.ingest("docs/")
-
-**Specific pattern**
-result = radiate.ingest("docs/", pattern="*.pdf")
-
+- More robust ingestion for edge cases

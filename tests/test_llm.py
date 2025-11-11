@@ -2,7 +2,7 @@ from radiate.llm import LLMClient
 from radiate.core import Radiate
 
 #calling the llm
-llm=LLMClient(provider="openrouter",api_key='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',
+llm=LLMClient(provider="openrouter",api_key='KEY',
               model='nvidia/nemotron-nano-12b-v2-vl:free')
 
 #using embedding model

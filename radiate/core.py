@@ -370,29 +370,25 @@ class Radiate:
 
 
     #-------------------------Query-------------------------------
-    def query(self, question: str, top_k: int = 3, mode: str = "dense") -> str:
-        """
-        Query ingested documents.
-
-        Args:
-            question: Question to ask
-            top_k: Number of relevant chunks to retrieve
-            mode: Retrieval mode - "dense" (default), "sparse" (BM25), or "hybrid"
-
-        Returns:
-            Context from relevant documents
-            -for LLM's
-
-        Examples:
-            # Dense vector search
-            radiate.query("What is machine learning?")
-            
-            # Hybrid search (better accuracy)
-            radiate.query("API rate limit", mode="hybrid")
-        """
+    def query(self, question: str, top_k: int = 3, mode: str = "dense") -> list:
         from radiate.query import QueryEngine
         engine = QueryEngine(self)
-        return engine.query(question, top_k=top_k, mode=mode)
+        result = engine.query(question, top_k=top_k, mode=mode)
+        # Guarantee result is always list of dicts for LLM
+        if isinstance(result, str):
+            return [{"text": result}]
+        elif isinstance(result, list):
+            # Check for list of dicts—return as is for LLM
+            if len(result) > 0 and isinstance(result[0], dict) and "text" in result[0]:
+                return result
+            else:
+                # List of strings
+                return [{"text": str(r)} for r in result]
+        elif isinstance(result, dict) and "chunks" in result:
+            return result["chunks"]
+        else:
+            return [{"text": str(result)}]
+
     
     #---------------------SEARCH------------------------------------
     def search(self, query: str, top_k: int = 5, mode: str = "dense") -> List[Dict[str, Any]]:

@@ -21,45 +21,42 @@ class QueryEngine:
             self._hybrid_retriever = HybridRetriever(self.radiate)
         return self._hybrid_retriever
     
+ # MODIFY search() method signature:
+
     def search(
         self, 
         query: str, 
         top_k: int = 5,
-        mode: str = "dense"
+        mode: str = "dense",
+        rerank: bool = False  # NEW
     ) -> List[Dict[str, Any]]:
         """
-        Search for relevant documents.
+        Search for relevant documents with optional reranking.
         
         Args:
             query: Search query text
-            top_k: Number of results to return
-            mode: Retrieval mode - "dense" (default), "sparse" (BM25), or "hybrid"
+            top_k: Number of results to return (after reranking if enabled)
+            mode: Retrieval mode - "dense", "sparse", or "hybrid"
+            rerank: Whether to apply cross-encoder reranking
         
         Returns:
             List of relevant chunks with metadata and scores
-        
-        Examples:
-            # Dense vector search (default)
-            results = engine.search("machine learning")
-            
-            # BM25 keyword search
-            results = engine.search("API error 429", mode="sparse")
-            
-            # Hybrid search (best of both)
-            results = engine.search("reset password", mode="hybrid")
         """
+        # Determine retrieval count: get more candidates if reranking
+        retrieve_k = top_k * 3 if rerank and self.radiate.reranker else top_k
+        
+        # Retrieve candidates
         if mode in ["sparse", "hybrid"]:
             retriever = self._get_hybrid_retriever()
-            return retriever.search(query, top_k=top_k, mode=mode)
-        
+            results = retriever.search(query, top_k=retrieve_k, mode=mode)
         else:
-            # Default dense search (backward compatible)
+            # Default dense search
             query_embedding = self.radiate.get_embedding(query)
             
             search_results = self.radiate.qdrant_client.search(
                 collection_name=self.radiate.collection_name,
                 query_vector=query_embedding,
-                limit=top_k
+                limit=retrieve_k
             )
             
             results = []
@@ -70,16 +67,67 @@ class QueryEngine:
                     "source": hit.payload.get("source", ""),
                     "chunk_index": hit.payload.get("chunk_index", 0),
                     "metadata": {k: v for k, v in hit.payload.items() 
-                               if k not in ["text", "source", "chunk_index"]}
+                            if k not in ["text", "source", "chunk_index"]}
                 })
-            
-            return results
-    
+        
+        # NEW: Apply reranking if enabled
+        if rerank and self.radiate.reranker and results:
+            results = self._rerank_results(query, results, top_k)
+        
+        return results[:top_k]
+
+
+    # NEW METHOD: Add this to QueryEngine class
+
+    def _rerank_results(
+        self, 
+        query: str, 
+        results: List[Dict[str, Any]], 
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Rerank results using cross-encoder model.
+        
+        Args:
+            query: Original query
+            results: List of result dicts with 'text' field
+            top_k: Number of top results to return
+        
+        Returns:
+            Reranked results with updated scores
+        """
+        # Extract texts for reranking
+        texts = [r["text"] for r in results]
+        
+        # Rerank and get scores
+        reranked_texts, rerank_scores = self.radiate.reranker.rerank(
+            query, 
+            texts, 
+            top_k=top_k,
+            return_scores=True
+        )
+        
+        # Map reranked texts back to original results
+        text_to_result = {r["text"]: r for r in results}
+        
+        reranked_results = []
+        for text, score in zip(reranked_texts, rerank_scores):
+            result = text_to_result[text].copy()
+            result["rerank_score"] = float(score)
+            result["original_score"] = result.get("score", result.get("rrf_score", 0))
+            reranked_results.append(result)
+        
+        return reranked_results
+
+
+    # MODIFY query() method:
+
     def query(
         self, 
         question: str, 
         top_k: int = 3,
-        mode: str = "dense"
+        mode: str = "dense",
+        rerank: bool = False  # NEW
     ) -> str:
         """
         Query documents and return formatted context.
@@ -88,19 +136,28 @@ class QueryEngine:
             question: Question to answer
             top_k: Number of chunks to retrieve
             mode: Retrieval mode - "dense", "sparse", or "hybrid"
+            rerank: Whether to apply reranking (requires reranker enabled)
         
         Returns:
             Formatted context from relevant chunks
         """
-        results = self.search(question, top_k=top_k, mode=mode)
+        results = self.search(question, top_k=top_k, mode=mode, rerank=rerank)
         
         if not results:
             return "No relevant information found."
         
         context_parts = []
         for r in results:
-            score_label = "RRF" if mode == "hybrid" and "rrf_score" in r else "Score"
-            score_value = r.get('rrf_score', r.get('score', 0))
+            # Determine score label and value
+            if "rerank_score" in r:
+                score_label = "Rerank"
+                score_value = r["rerank_score"]
+            elif mode == "hybrid" and "rrf_score" in r:
+                score_label = "RRF"
+                score_value = r["rrf_score"]
+            else:
+                score_label = "Score"
+                score_value = r.get("score", 0)
             
             context_parts.append(
                 f"[Source: {r['source']}, Chunk {r['chunk_index']}, "

@@ -39,7 +39,11 @@ class Radiate:
         
         # Features
         track_costs: bool = True,
-        validate_connections: bool = False
+        validate_connections: bool = False,
+
+        #Re-ranker
+        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2",  #offline model
+        enable_reranker: bool = False
     ):
         """
         Initialize Radiate with flexible embedding provider.
@@ -97,7 +101,11 @@ class Radiate:
         
         if validate_connections:
             self._validate_setup()
-
+        self.enable_reranker = enable_reranker
+        self.reranker = None
+        if enable_reranker:
+            from radiate.reranker import OfflineCrossEncoderReranker
+            self.reranker = OfflineCrossEncoderReranker(model_name=reranker_model)
     #-------------check collection----------------------
 
     def _ensure_collection_exists(self):
@@ -370,26 +378,41 @@ class Radiate:
 
 
     #-------------------------Query-------------------------------
-    def query(self, question: str, top_k: int = 3, mode: str = "dense") -> list:
+    def query(
+        self, 
+        question: str, 
+        top_k: int = 3, 
+        mode: str = "dense", 
+        rerank: bool = False
+    ) -> list:
+        """
+        Query the collection for relevant chunks based on a question.
+        
+        Args:
+            question: The question or query string to search for.
+            top_k: Number of top results to return (default: 3).
+            mode: Retrieval mode - "dense", "sparse", or "hybrid" (default: "dense").
+            rerank: Whether to rerank the results using the reranker (default: False).
+        
+        Returns:
+            A list of dictionaries containing the search results.
+        """
         from radiate.query import QueryEngine
         engine = QueryEngine(self)
-        result = engine.query(question, top_k=top_k, mode=mode)
+        result = engine.query(question, top_k=top_k, mode=mode, rerank=rerank)  # Pass rerank flag
+        
         # Guarantee result is always list of dicts for LLM
         if isinstance(result, str):
             return [{"text": result}]
         elif isinstance(result, list):
-            # Check for list of dicts—return as is for LLM
             if len(result) > 0 and isinstance(result[0], dict) and "text" in result[0]:
                 return result
             else:
-                # List of strings
                 return [{"text": str(r)} for r in result]
         elif isinstance(result, dict) and "chunks" in result:
             return result["chunks"]
         else:
             return [{"text": str(result)}]
-
-    
     #---------------------SEARCH------------------------------------
     def search(self, query: str, top_k: int = 5, mode: str = "dense") -> List[Dict[str, Any]]:
         """

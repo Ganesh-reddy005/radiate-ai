@@ -1,5 +1,4 @@
-from typing import List, Dict, Any
-
+from typing import List, Dict, Any, Union
 
 class QueryEngine:
     """Handles semantic search queries with support for hybrid retrieval."""
@@ -120,32 +119,65 @@ class QueryEngine:
         return reranked_results
 
 
-    # MODIFY query() method:
-
     def query(
-        self, 
-        question: str, 
+        self,
+        question: str,
         top_k: int = 3,
         mode: str = "dense",
-        rerank: bool = False  # NEW
-    ) -> str:
+        rerank: bool = False,
+        metrics: bool = False
+    ) -> Union[str, Dict[str, Any]]:
         """
-        Query documents and return formatted context.
+        Query documents and return formatted context or structured results.
         
         Args:
             question: Question to answer
             top_k: Number of chunks to retrieve
             mode: Retrieval mode - "dense", "sparse", or "hybrid"
             rerank: Whether to apply reranking (requires reranker enabled)
-        
+            metrics: If True, return structured output with quality metrics
+            
         Returns:
-            Formatted context from relevant chunks
+            If metrics=False: Formatted string (backward compatible)
+            If metrics=True: Dict with results and quality metrics
+            
+        Examples:
+            # Get formatted context (default)
+            >>> context = engine.query("what is ML?")
+            
+            # Get structured output with quality metrics
+            >>> result = engine.query("what is ML?", metrics=True, rerank=True)
+            >>> print(result['quality']['confidence'])  # 0.85
         """
         results = self.search(question, top_k=top_k, mode=mode, rerank=rerank)
         
         if not results:
+            if metrics:
+                return {
+                    "query": question,
+                    "results": [],
+                    "count": 0,
+                    "quality": {
+                        "confidence": 0.0,
+                        "quality": "no_results",
+                        "warning": "No results found",
+                        "metrics": {}
+                    }
+                }
             return "No relevant information found."
         
+        # If metrics requested, return structured output
+        if metrics:
+            from radiate.metrics import QualityMetrics
+            quality_data = QualityMetrics.analyze_retrieval(results)
+            return {
+                "query": question,
+                "results": results,
+                "count": len(results),
+                "quality": quality_data
+            }
+        
+        # Default: Format as string (backward compatible)
         context_parts = []
         for r in results:
             # Determine score label and value
@@ -165,3 +197,4 @@ class QueryEngine:
             )
         
         return "\n\n".join(context_parts)
+

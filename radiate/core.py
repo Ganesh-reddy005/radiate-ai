@@ -1,5 +1,5 @@
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
@@ -378,30 +378,54 @@ class Radiate:
 
 
     #-------------------------Query-------------------------------
+
     def query(
-        self, 
-        question: str, 
-        top_k: int = 3, 
-        mode: str = "dense", 
-        rerank: bool = False
-    ) -> list:
+        self,
+        question: str,
+        top_k: int = 3,
+        mode: str = "hybrid",
+        rerank: bool = False,
+        metrics: bool = False
+    ) -> Union[List[Dict[str, str]], Dict[str, Any]]:
         """
-        Query the collection for relevant chunks based on a question.
+        Query documents with optional quality metrics.
         
         Args:
-            question: The question or query string to search for.
-            top_k: Number of top results to return (default: 3).
-            mode: Retrieval mode - "dense", "sparse", or "hybrid" (default: "dense").
-            rerank: Whether to rerank the results using the reranker (default: False).
-        
+            question: Question to answer
+            top_k: Number of results
+            mode: 'hybrid'- Retrieval mode - "dense", "sparse", or "hybrid"
+            rerank: Enable reranking
+            metrics: Return structured output with quality metrics
+            
         Returns:
-            A list of dictionaries containing the search results.
+            If metrics=False: List of dicts (for LLM) - backward compatible
+            If metrics=True: Dict with results and quality metrics
+            
+        Examples:
+            # For LLM integration (default)
+            >>> chunks = radiate.query("what is ML?", rerank=True)
+            >>> answer = llm.answer(question, chunks)
+            
+            # With quality metrics
+            >>> result = radiate.query("what is ML?", metrics=True, rerank=True)
+            >>> if result['quality']['confidence'] < 0.5:
+            >>>     print("Low confidence - results may not be relevant")
         """
         from radiate.query import QueryEngine
         engine = QueryEngine(self)
-        result = engine.query(question, top_k=top_k, mode=mode, rerank=rerank)  # Pass rerank flag
+        result = engine.query(
+            question,
+            top_k=top_k,
+            mode=mode,
+            rerank=rerank,
+            metrics=metrics
+        )
         
-        # Guarantee result is always list of dicts for LLM
+        # If metrics requested, return structured output as-is
+        if metrics:
+            return result
+        
+        # Default: Convert to list of dicts for LLM (backward compatible)
         if isinstance(result, str):
             return [{"text": result}]
         elif isinstance(result, list):
@@ -413,6 +437,164 @@ class Radiate:
             return result["chunks"]
         else:
             return [{"text": str(result)}]
+
+
+    # ADDING these new helper methods to Radiate class
+
+    def analyze_query(
+        self,
+        question: str,
+        top_k: int = 3,
+        mode: str = "hybrid",
+        rerank: bool = False
+    ) -> None:
+        """
+        Query and print quality analysis (helpful for debugging/tuning).
+        
+        Args:
+            question: Question to analyze
+            top_k: Number of results
+            mode: Retrieval mode
+            rerank: Enable reranking
+            
+        Example:
+            >>> radiate.analyze_query("what is ML?", rerank=True)
+            
+             Query Analysis
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            Confidence: 0.85 (Excellent)
+            Top Score: 2.486
+            Results: 3 chunks from 1 source
+            Reranking: Enabled
+            High quality results
+        """
+        response = self.query(question, top_k=top_k, mode=mode, rerank=rerank, metrics=True)
+        
+        quality = response['quality']
+        retrieval_info = quality.get('retrieval_analysis', {})
+        
+        print("\n Query Analysis")
+        print("━" * 42)
+        print(f"Question: {question}")
+        print(f"Confidence: {quality['confidence']:.2f} ({quality['quality'].title()})")
+        print(f"Top Score: {quality['metrics']['top_score']:.3f}")
+        print(f"Avg Score: {quality['metrics']['avg_score']:.3f}")
+        print(f"Results: {response['count']} chunks from {retrieval_info.get('unique_sources', '?')} source(s)")
+        print(f"Retrieval Mode: {mode}")
+        print(f"Reranking: {'Enabled' if rerank else 'Disabled'}")
+        
+        if quality['warning']:
+            print(f"\n⚠️  {quality['warning']}")
+        else:
+            print("\n High quality results")
+        
+        print("\n Top Result Preview:")
+        if response['results']:
+            preview_text = response['results'][0]['text'][:200]
+            print(preview_text + ("..." if len(response['results'][0]['text']) > 200 else ""))
+        
+        print("\n Score Distribution:")
+        scores = quality['metrics']['scores']
+        for i, score in enumerate(scores, 1):
+            bar_length = int((score / max(scores)) * 30) if max(scores) > 0 else 0
+            bar = "█" * bar_length
+            print(f"  Result {i}: {bar} {score:.3f}")
+
+
+    def compare_modes(
+        self,
+        question: str,
+        top_k: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Compare retrieval with and without reranking side-by-side.
+        
+        Args:
+            question: Query to test
+            top_k: Number of results
+            
+        Returns:
+            Comparison dict with quality metrics for each mode
+            
+        Example:
+            >>> comparison = radiate.compare_modes("what is ML?")
+            >>> improvement = comparison['with_rerank']['quality']['confidence'] - \
+            ...               comparison['without_rerank']['quality']['confidence']
+            >>> print(f"Reranking improved confidence by {improvement:.2f}")
+        """
+        modes = [
+            {"label": "without_rerank", "rerank": False},
+            {"label": "with_rerank", "rerank": True}
+        ]
+        
+        results = {}
+        for config in modes:
+            label = config.pop("label")
+            response = self.query(question, top_k=top_k, metrics=True, **config)
+            results[label] = response
+        
+        return results
+
+
+    def print_comparison(
+        self,
+        question: str,
+        top_k: int = 3
+    ) -> None:
+        """
+        Print side-by-side comparison of retrieval with/without reranking.
+        
+        Args:
+            question: Query to compare
+            top_k: Number of results
+            
+        Example:
+            >>> radiate.print_comparison("what is machine learning?")
+            
+            Retrieval Comparison
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            
+            Without Reranking:
+            Confidence: 0.72 (Good)
+            Top Score: 0.845
+            Quality: good
+            
+            With Reranking:
+            Confidence: 0.89 (Excellent)
+            Top Score: 2.486
+            Quality: excellent
+            
+             Improvement: +24% confidence with reranking
+        """
+        comparison = self.compare_modes(question, top_k=top_k)
+        
+        print("\n Retrieval Comparison")
+        print("━" * 42)
+        print(f"Question: {question}\n")
+        
+        for label, data in comparison.items():
+            quality = data['quality']
+            print(f"{label.replace('_', ' ').title()}:")
+            print(f"  Confidence: {quality['confidence']:.2f} ({quality['quality'].title()})")
+            print(f"  Top Score: {quality['metrics']['top_score']:.3f}")
+            print(f"  Quality: {quality['quality']}")
+            if quality['warning']:
+                print(f"  ⚠️  {quality['warning']}")
+            print()
+        
+        # Calculate improvement
+        if 'without_rerank' in comparison and 'with_rerank' in comparison:
+            conf_without = comparison['without_rerank']['quality']['confidence']
+            conf_with = comparison['with_rerank']['quality']['confidence']
+            improvement = ((conf_with - conf_without) / max(conf_without, 0.01)) * 100
+            
+            if improvement > 5:
+                print(f"🎯 Improvement: +{improvement:.0f}% confidence with reranking")
+            elif improvement < -5:
+                print(f"⚠️  Reranking decreased confidence by {abs(improvement):.0f}%")
+            else:
+                print(" Similar performance with or without reranking")
+
     #---------------------SEARCH------------------------------------
     def search(self, query: str, top_k: int = 5, mode: str = "dense") -> List[Dict[str, Any]]:
         """

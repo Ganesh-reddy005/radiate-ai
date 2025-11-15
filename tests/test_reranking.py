@@ -4,7 +4,7 @@ from radiate.core import Radiate
 # Initialize LLM
 llm = LLMClient(
     provider="openrouter",
-    api_key='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',
+    api_key='API_KEY',
     model='nvidia/nemotron-nano-12b-v2-vl:free'
 )
 

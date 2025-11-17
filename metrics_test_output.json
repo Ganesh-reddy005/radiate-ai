@@ -1,0 +1,37 @@
+[
+  {
+    "metric": "ingest_file",
+    "value": "test_data/sample.txt",
+    "unit": null,
+    "extra": {
+      "total_chunks": 3,
+      "avg_chunk_tokens": 375.6666666666667,
+      "errors": 0
+    },
+    "timestamp": 1763214718.5710971
+  },
+  {
+    "metric": "ingest_file_duration",
+    "value": 0.8335,
+    "unit": "sec",
+    "extra": {},
+    "timestamp": 1763214718.571218
+  },
+  {
+    "metric": "search_query",
+    "value": "What is machine learning?",
+    "unit": null,
+    "extra": {
+      "retrieved_chunks": 3,
+      "latency_sec": 0.7096
+    },
+    "timestamp": 1763214719.280928
+  },
+  {
+    "metric": "search_query_duration",
+    "value": 0.7097,
+    "unit": "sec",
+    "extra": {},
+    "timestamp": 1763214719.280975
+  }
+]

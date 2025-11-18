@@ -28,7 +28,7 @@ class Radiate:
     def __init__(
         self,
         # Embedding configuration
-        embedding_provider: str = "local",
+        embedding_provider: str = "openai",
         embedding_model: Optional[str] = None,
         openai_api_key: Optional[str] = None,
         

@@ -628,7 +628,7 @@ Contributions are welcome! Here's how you can help:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/radiate-ai.git
+git clone https://github.com/ganesh-reddy005/radiate-ai.git
 cd radiate-ai
 
 # Install in development mode

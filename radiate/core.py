@@ -16,7 +16,7 @@ class Radiate:
     
     Example:
         # Local embeddings (free, no API key)
-        radiate = Radiate(embedding_provider="local")
+        radiate = Radiate(embedding_provider="openai", openai_api_key='YOUR_KEY')
         
         # OpenAI embeddings
         radiate = Radiate(
@@ -892,3 +892,4 @@ class Radiate:
         print(f"\nText Preview:")
         print(f"{chunk['text'][:200]}...")
         print(f"\nFull Length: {len(chunk['text'])} characters")
+
